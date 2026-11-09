@@ -142,16 +142,32 @@ type rawPanel struct {
 	} `json:"transformations"`
 	FieldConfig struct {
 		Defaults struct {
-			Unit       string `json:"unit"`
+			Unit  string `json:"unit"`
+			Color struct {
+				Mode       string `json:"mode"`
+				FixedColor string `json:"fixedColor"`
+			} `json:"color"`
 			Thresholds struct {
+				Mode  string `json:"mode"`
 				Steps []struct {
 					Color string   `json:"color"`
 					Value *float64 `json:"value"`
 				} `json:"steps"`
 			} `json:"thresholds"`
+			Mappings []struct {
+				Type    string `json:"type"`
+				Options map[string]struct {
+					Text  string `json:"text"`
+					Color string `json:"color"`
+					Index int    `json:"index"`
+				} `json:"options"`
+			} `json:"mappings"`
 		} `json:"defaults"`
 	} `json:"fieldConfig"`
-	Panels []rawPanel `json:"panels"`
+	// Legacy singlestat / gauge fields
+	Thresholds string   `json:"thresholds"`
+	Colors     []string `json:"colors"`
+	Panels     []rawPanel `json:"panels"`
 }
 
 func flattenPanels(panels []rawPanel) []rawPanel {
@@ -355,7 +371,7 @@ func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, e
 		}
 
 		formatted := formatWithUnit(rawVal, p.FieldConfig.Defaults.Unit)
-		colorANSI := evaluateThresholdColor(rawVal, p.FieldConfig.Defaults.Thresholds.Steps)
+		colorANSI := resolvePanelColorANSI(rawVal, p)
 
 		return &PanelValue{
 			Title:     p.Title,
@@ -393,35 +409,146 @@ func formatWithUnit(rawVal, unit string) string {
 	}
 }
 
-func evaluateThresholdColor(rawVal string, steps []struct {
-	Color string   `json:"color"`
-	Value *float64 `json:"value"`
-}) string {
-	if len(steps) == 0 {
-		return ""
-	}
-	num, err := strconv.ParseFloat(rawVal, 64)
-	if err != nil {
-		return ""
-	}
-
-	matchedColor := steps[0].Color
-	for _, s := range steps {
-		if s.Value != nil && num >= *s.Value {
-			matchedColor = s.Color
+func resolvePanelColorANSI(rawVal string, p rawPanel) string {
+	// 1. Check Value Mappings first (e.g., 1 -> green, 0 -> red)
+	for _, m := range p.FieldConfig.Defaults.Mappings {
+		if m.Type == "value" {
+			if opt, ok := m.Options[rawVal]; ok && opt.Color != "" {
+				if ansi := grafanaColorToANSI(opt.Color); ansi != "" {
+					return ansi
+				}
+			}
 		}
 	}
 
-	switch strings.ToLower(matchedColor) {
-	case "green", "super-light-green", "light-green", "dark-green":
-		return "\033[32m"
-	case "yellow", "orange", "super-light-yellow", "light-yellow", "dark-yellow", "light-orange", "dark-orange":
-		return "\033[33m"
-	case "red", "super-light-red", "light-red", "dark-red":
-		return "\033[31m"
-	default:
+	// 2. Check fixed color mode
+	if p.FieldConfig.Defaults.Color.Mode == "fixed" && p.FieldConfig.Defaults.Color.FixedColor != "" {
+		if ansi := grafanaColorToANSI(p.FieldConfig.Defaults.Color.FixedColor); ansi != "" {
+			return ansi
+		}
+	}
+
+	// 3. Check modern thresholds steps
+	steps := p.FieldConfig.Defaults.Thresholds.Steps
+	if len(steps) > 0 {
+		matchedColor := steps[0].Color
+		if num, err := strconv.ParseFloat(rawVal, 64); err == nil {
+			for _, s := range steps {
+				if s.Value != nil && num >= *s.Value {
+					matchedColor = s.Color
+				}
+			}
+		}
+		if ansi := grafanaColorToANSI(matchedColor); ansi != "" {
+			return ansi
+		}
+	}
+
+	// 4. Check legacy singlestat thresholds ("70,90" + colors array)
+	if p.Thresholds != "" && len(p.Colors) > 0 {
+		matchedColor := p.Colors[0]
+		if num, err := strconv.ParseFloat(rawVal, 64); err == nil {
+			parts := strings.Split(p.Thresholds, ",")
+			for i, part := range parts {
+				if th, err := strconv.ParseFloat(strings.TrimSpace(part), 64); err == nil && num >= th {
+					if i+1 < len(p.Colors) {
+						matchedColor = p.Colors[i+1]
+					}
+				}
+			}
+		}
+		if ansi := grafanaColorToANSI(matchedColor); ansi != "" {
+			return ansi
+		}
+	}
+
+	// 5. Fallback to Grafana's default base green if value is numeric
+	if _, err := strconv.ParseFloat(rawVal, 64); err == nil {
+		return grafanaColorToANSI("green")
+	}
+
+	return ""
+}
+
+// grafanaColorToANSI converts Grafana named colors, #HEX, or rgb()/rgba() to 24-bit TrueColor ANSI escape sequences.
+func grafanaColorToANSI(c string) string {
+	c = strings.TrimSpace(strings.ToLower(c))
+	if c == "" || c == "transparent" || c == "text" {
 		return ""
 	}
+
+	// Named Grafana UI palette colors -> exact Grafana RGB values
+	palette := map[string][3]int{
+		"green":              {115, 191, 105}, // #73BF69
+		"super-light-green":  {200, 242, 194},
+		"light-green":        {150, 217, 141},
+		"semi-dark-green":    {86, 166, 75},
+		"dark-green":         {55, 135, 45},
+		"yellow":             {250, 222, 42}, // #FADE2A
+		"super-light-yellow": {255, 248, 153},
+		"light-yellow":       {252, 238, 92},
+		"semi-dark-yellow":   {224, 180, 0},
+		"dark-yellow":        {196, 140, 0},
+		"orange":             {255, 152, 48}, // #FF9830
+		"super-light-orange": {255, 203, 125},
+		"light-orange":       {255, 179, 87},
+		"semi-dark-orange":   {250, 100, 0},
+		"dark-orange":        {229, 84, 0},
+		"red":                {242, 73, 92}, // #F2495C
+		"super-light-red":    {255, 166, 176},
+		"light-red":          {255, 115, 131},
+		"semi-dark-red":      {224, 47, 68},
+		"dark-red":           {196, 22, 42},
+		"blue":               {87, 148, 242}, // #5794F2
+		"super-light-blue":   {192, 216, 255},
+		"light-blue":         {138, 184, 255},
+		"semi-dark-blue":     {50, 116, 217},
+		"dark-blue":          {31, 96, 196},
+		"purple":             {184, 119, 217}, // #B877D9
+		"super-light-purple": {222, 182, 242},
+		"light-purple":       {202, 149, 229},
+		"semi-dark-purple":   {163, 82, 204},
+		"dark-purple":        {143, 59, 184},
+	}
+
+	if rgb, ok := palette[c]; ok {
+		return fmt.Sprintf("\033[38;2;%d;%d;%dm", rgb[0], rgb[1], rgb[2])
+	}
+
+	// Hex color (#RRGGBB or #RGB)
+	if strings.HasPrefix(c, "#") {
+		hex := strings.TrimPrefix(c, "#")
+		if len(hex) == 3 {
+			hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+		}
+		if len(hex) >= 6 {
+			r, err1 := strconv.ParseInt(hex[0:2], 16, 64)
+			g, err2 := strconv.ParseInt(hex[2:4], 16, 64)
+			b, err3 := strconv.ParseInt(hex[4:6], 16, 64)
+			if err1 == nil && err2 == nil && err3 == nil {
+				return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+			}
+		}
+	}
+
+	// rgb(r, g, b) or rgba(r, g, b, a)
+	if strings.HasPrefix(c, "rgb") {
+		open := strings.IndexByte(c, '(')
+		close := strings.LastIndexByte(c, ')')
+		if open != -1 && close > open {
+			parts := strings.Split(c[open+1:close], ",")
+			if len(parts) >= 3 {
+				r, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+				g, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+				b, err3 := strconv.Atoi(strings.TrimSpace(parts[2]))
+				if err1 == nil && err2 == nil && err3 == nil {
+					return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 type dsInfo struct {

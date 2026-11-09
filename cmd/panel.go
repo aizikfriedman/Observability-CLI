@@ -32,7 +32,7 @@ var pnlCmd = &cobra.Command{
 		}
 
 		if res.ColorANSI != "" {
-			fmt.Printf("[ %s ] %s%s\033[0m\n", res.Title, res.ColorANSI, res.Formatted)
+			fmt.Printf("%s[ %s ] %s\033[0m\n", res.ColorANSI, res.Title, res.Formatted)
 		} else {
 			fmt.Printf("[ %s ] %s\n", res.Title, res.Formatted)
 		}
