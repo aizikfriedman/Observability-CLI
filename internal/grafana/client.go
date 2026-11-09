@@ -1,0 +1,616 @@
+package grafana
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Client wraps the standard net/http client for Grafana API requests.
+type Client struct {
+	BaseURL    string
+	Token      string
+	httpClient *http.Client
+}
+
+// Alert represents a minimal firing alert in Grafana.
+type Alert struct {
+	Name    string
+	Summary string
+	State   string
+}
+
+// PanelSummary represents a single row in `ocli pnl ls <DASH_UID>`.
+type PanelSummary struct {
+	ID          int
+	Type        string
+	Title       string
+	Description string
+}
+
+// PanelQuery represents a query target inside a panel.
+type PanelQuery struct {
+	RefID string
+	Expr  string
+}
+
+// PanelInfo represents detailed configuration for `ocli pnl info <DASH_UID> <PANEL_ID>`.
+type PanelInfo struct {
+	ID           int
+	Title        string
+	DashboardUID string
+	Type         string
+	DataSource   string
+	Queries      []PanelQuery
+	Transforms   []string
+}
+
+// PanelValue represents the evaluated value of a panel for `ocli pnl <DASH_UID> <PANEL_ID>`.
+type PanelValue struct {
+	Title     string
+	Formatted string
+	ColorANSI string
+}
+
+// PromQLResult represents the output of `ocli pql "<query>"`.
+type PromQLResult struct {
+	IsScalar   bool
+	ScalarVal  string
+	VectorRows []PromQLRow
+}
+
+// PromQLRow represents a single metric value + label set.
+type PromQLRow struct {
+	Value  string
+	Labels string
+}
+
+// NewClient initializes a minimal Grafana HTTP client with a 10s timeout.
+func NewClient(baseURL, token string) *Client {
+	return &Client{
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		Token:   token,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+}
+
+func (c *Client) doRequest(method, endpoint string, payload []byte) ([]byte, error) {
+	reqURL := fmt.Sprintf("%s%s", c.BaseURL, endpoint)
+	var bodyReader io.Reader
+	if payload != nil {
+		bodyReader = bytes.NewReader(payload)
+	}
+
+	req, err := http.NewRequest(method, reqURL, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("grafana API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return body, nil
+}
+
+func (c *Client) doGet(endpoint string) ([]byte, error) {
+	return c.doRequest(http.MethodGet, endpoint, nil)
+}
+
+// internal raw structures for decoding Grafana dashboard JSON
+type rawPanel struct {
+	ID          int             `json:"id"`
+	Title       string          `json:"title"`
+	Type        string          `json:"type"`
+	Description string          `json:"description"`
+	DataSource  json.RawMessage `json:"datasource"`
+	Targets     []struct {
+		RefID      string          `json:"refId"`
+		Expr       string          `json:"expr"`
+		Query      string          `json:"query"`
+		DataSource json.RawMessage `json:"datasource"`
+	} `json:"targets"`
+	Transformations []struct {
+		ID      string                 `json:"id"`
+		Options map[string]interface{} `json:"options"`
+	} `json:"transformations"`
+	FieldConfig struct {
+		Defaults struct {
+			Unit       string `json:"unit"`
+			Thresholds struct {
+				Steps []struct {
+					Color string   `json:"color"`
+					Value *float64 `json:"value"`
+				} `json:"steps"`
+			} `json:"thresholds"`
+		} `json:"defaults"`
+	} `json:"fieldConfig"`
+	Panels []rawPanel `json:"panels"`
+}
+
+func flattenPanels(panels []rawPanel) []rawPanel {
+	var out []rawPanel
+	for _, p := range panels {
+		if p.Type == "row" && len(p.Panels) > 0 {
+			out = append(out, flattenPanels(p.Panels)...)
+			continue
+		}
+		out = append(out, p)
+		if len(p.Panels) > 0 {
+			out = append(out, flattenPanels(p.Panels)...)
+		}
+	}
+	return out
+}
+
+func parseDataSourceRef(raw json.RawMessage) (uidOrName string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str
+	}
+	var obj struct {
+		UID  string `json:"uid"`
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		if obj.Name != "" {
+			return obj.Name
+		}
+		if obj.UID != "" {
+			return obj.UID
+		}
+		return obj.Type
+	}
+	return ""
+}
+
+func (c *Client) fetchDashboardPanels(dashboardUID string) ([]rawPanel, error) {
+	body, err := c.doGet(fmt.Sprintf("/api/dashboards/uid/%s", url.PathEscape(dashboardUID)))
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Dashboard struct {
+			Panels []rawPanel `json:"panels"`
+		} `json:"dashboard"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse dashboard JSON: %w", err)
+	}
+
+	return flattenPanels(result.Dashboard.Panels), nil
+}
+
+// ListPanels returns all panels in a dashboard for `ocli pnl ls <DASH_UID>`.
+func (c *Client) ListPanels(dashboardUID string) ([]PanelSummary, error) {
+	panels, err := c.fetchDashboardPanels(dashboardUID)
+	if err != nil {
+		return nil, err
+	}
+
+	var summaries []PanelSummary
+	for _, p := range panels {
+		if p.Type == "row" {
+			continue
+		}
+		summaries = append(summaries, PanelSummary{
+			ID:          p.ID,
+			Type:        p.Type,
+			Title:       p.Title,
+			Description: strings.ReplaceAll(strings.TrimSpace(p.Description), "\n", " "),
+		})
+	}
+	return summaries, nil
+}
+
+// GetPanelInfo returns detailed panel settings for `ocli pnl info <DASH_UID> <PANEL_ID>`.
+func (c *Client) GetPanelInfo(dashboardUID string, panelID int) (*PanelInfo, error) {
+	panels, err := c.fetchDashboardPanels(dashboardUID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, p := range panels {
+		if p.ID != panelID {
+			continue
+		}
+
+		ds := parseDataSourceRef(p.DataSource)
+		var queries []PanelQuery
+		for _, t := range p.Targets {
+			if ds == "" {
+				ds = parseDataSourceRef(t.DataSource)
+			}
+			expr := strings.TrimSpace(t.Expr)
+			if expr == "" {
+				expr = strings.TrimSpace(t.Query)
+			}
+			if expr != "" {
+				ref := t.RefID
+				if ref == "" {
+					ref = "A"
+				}
+				queries = append(queries, PanelQuery{
+					RefID: ref,
+					Expr:  expr,
+				})
+			}
+		}
+		if ds == "" {
+			ds = "default"
+		}
+
+		var transforms []string
+		for _, tr := range p.Transformations {
+			desc := tr.ID
+			if tr.ID == "organize" {
+				if excludeByName, ok := tr.Options["excludeByName"].(map[string]interface{}); ok {
+					var hidden []string
+					for field, excluded := range excludeByName {
+						if b, ok := excluded.(bool); ok && b {
+							hidden = append(hidden, field)
+						}
+					}
+					sort.Strings(hidden)
+					if len(hidden) > 0 {
+						desc = fmt.Sprintf("Organize fields (Hidden: %s)", strings.Join(hidden, ", "))
+					} else {
+						desc = "Organize fields"
+					}
+				}
+			}
+			transforms = append(transforms, desc)
+		}
+
+		return &PanelInfo{
+			ID:           p.ID,
+			Title:        p.Title,
+			DashboardUID: dashboardUID,
+			Type:         p.Type,
+			DataSource:   ds,
+			Queries:      queries,
+			Transforms:   transforms,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("panel %d not found in dashboard %s", panelID, dashboardUID)
+}
+
+// GetPanelValue evaluates the panel's primary query and returns a minimal status-colored value.
+func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, error) {
+	panels, err := c.fetchDashboardPanels(dashboardUID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, p := range panels {
+		if p.ID != panelID {
+			continue
+		}
+
+		ds := parseDataSourceRef(p.DataSource)
+		var expr string
+		for _, t := range p.Targets {
+			if ds == "" {
+				ds = parseDataSourceRef(t.DataSource)
+			}
+			if t.Expr != "" {
+				expr = t.Expr
+				break
+			}
+			if t.Query != "" {
+				expr = t.Query
+				break
+			}
+		}
+
+		if expr == "" {
+			return &PanelValue{
+				Title:     p.Title,
+				Formatted: "N/A (no query expression)",
+			}, nil
+		}
+
+		res, err := c.QueryPromQL(ds, expr)
+		if err != nil {
+			return nil, err
+		}
+
+		rawVal := "No data"
+		if res.IsScalar {
+			rawVal = res.ScalarVal
+		} else if len(res.VectorRows) > 0 {
+			rawVal = res.VectorRows[0].Value
+		}
+
+		formatted := formatWithUnit(rawVal, p.FieldConfig.Defaults.Unit)
+		colorANSI := evaluateThresholdColor(rawVal, p.FieldConfig.Defaults.Thresholds.Steps)
+
+		return &PanelValue{
+			Title:     p.Title,
+			Formatted: formatted,
+			ColorANSI: colorANSI,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("panel %d not found in dashboard %s", panelID, dashboardUID)
+}
+
+func formatWithUnit(rawVal, unit string) string {
+	num, err := strconv.ParseFloat(rawVal, 64)
+	if err != nil {
+		return rawVal
+	}
+
+	switch unit {
+	case "percent", "percentunit":
+		if unit == "percentunit" {
+			num *= 100
+		}
+		return fmt.Sprintf("%.1f%%", num)
+	case "bytes", "decbytes":
+		return fmt.Sprintf("%.1f B", num)
+	case "s", "sec":
+		return fmt.Sprintf("%.2fs", num)
+	case "ms":
+		return fmt.Sprintf("%.1fms", num)
+	default:
+		if num == float64(int64(num)) {
+			return fmt.Sprintf("%d", int64(num))
+		}
+		return fmt.Sprintf("%.2f", num)
+	}
+}
+
+func evaluateThresholdColor(rawVal string, steps []struct {
+	Color string   `json:"color"`
+	Value *float64 `json:"value"`
+}) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	num, err := strconv.ParseFloat(rawVal, 64)
+	if err != nil {
+		return ""
+	}
+
+	matchedColor := steps[0].Color
+	for _, s := range steps {
+		if s.Value != nil && num >= *s.Value {
+			matchedColor = s.Color
+		}
+	}
+
+	switch strings.ToLower(matchedColor) {
+	case "green", "super-light-green", "light-green", "dark-green":
+		return "\033[32m"
+	case "yellow", "orange", "super-light-yellow", "light-yellow", "dark-yellow", "light-orange", "dark-orange":
+		return "\033[33m"
+	case "red", "super-light-red", "light-red", "dark-red":
+		return "\033[31m"
+	default:
+		return ""
+	}
+}
+
+type dsInfo struct {
+	ID        int    `json:"id"`
+	UID       string `json:"uid"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	IsDefault bool   `json:"isDefault"`
+}
+
+func (c *Client) resolveDataSource(identifier string) (*dsInfo, error) {
+	identifier = strings.TrimSpace(identifier)
+
+	// 1. If specific name or UID is given, try by name then by UID.
+	if identifier != "" && identifier != "default" && identifier != "$datasource" {
+		if body, err := c.doGet("/api/datasources/name/" + url.PathEscape(identifier)); err == nil {
+			var ds dsInfo
+			if json.Unmarshal(body, &ds) == nil && (ds.UID != "" || ds.ID != 0) {
+				return &ds, nil
+			}
+		}
+		if body, err := c.doGet("/api/datasources/uid/" + url.PathEscape(identifier)); err == nil {
+			var ds dsInfo
+			if json.Unmarshal(body, &ds) == nil && (ds.UID != "" || ds.ID != 0) {
+				return &ds, nil
+			}
+		}
+		return nil, fmt.Errorf("datasource %q not found in Grafana", identifier)
+	}
+
+	// 2. Otherwise fetch all datasources and pick default (or first prometheus-compatible one).
+	body, err := c.doGet("/api/datasources")
+	if err != nil {
+		return nil, err
+	}
+	var list []dsInfo
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("failed to parse datasources list: %w", err)
+	}
+
+	for _, ds := range list {
+		if ds.IsDefault {
+			return &ds, nil
+		}
+	}
+	for _, ds := range list {
+		if strings.Contains(strings.ToLower(ds.Type), "prometheus") {
+			return &ds, nil
+		}
+	}
+	if len(list) > 0 {
+		return &list[0], nil
+	}
+
+	return nil, fmt.Errorf("no datasources configured in Grafana")
+}
+
+// QueryPromQL executes an instant PromQL query via Grafana's DataSource proxy.
+func (c *Client) QueryPromQL(dsIdentifier, query string) (*PromQLResult, error) {
+	ds, err := c.resolveDataSource(dsIdentifier)
+	if err != nil {
+		return nil, err
+	}
+
+	var proxyPath string
+	if ds.UID != "" {
+		proxyPath = fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/query?query=%s", url.PathEscape(ds.UID), url.QueryEscape(query))
+	} else {
+		proxyPath = fmt.Sprintf("/api/datasources/proxy/%d/api/v1/query?query=%s", ds.ID, url.QueryEscape(query))
+	}
+
+	body, err := c.doGet(proxyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var promResp struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+		Data   struct {
+			ResultType string          `json:"resultType"`
+			Result     json.RawMessage `json:"result"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &promResp); err != nil {
+		return nil, fmt.Errorf("failed to parse PromQL response: %w", err)
+	}
+	if promResp.Status != "success" {
+		return nil, fmt.Errorf("promql error: %s", promResp.Error)
+	}
+
+	switch promResp.Data.ResultType {
+	case "scalar", "string":
+		var pair []interface{}
+		if err := json.Unmarshal(promResp.Data.Result, &pair); err != nil || len(pair) < 2 {
+			return nil, fmt.Errorf("unexpected scalar format")
+		}
+		return &PromQLResult{
+			IsScalar:  true,
+			ScalarVal: fmt.Sprintf("%v", pair[1]),
+		}, nil
+
+	case "vector":
+		var samples []struct {
+			Metric map[string]string `json:"metric"`
+			Value  []interface{}     `json:"value"`
+		}
+		if err := json.Unmarshal(promResp.Data.Result, &samples); err != nil {
+			return nil, fmt.Errorf("failed to parse vector samples: %w", err)
+		}
+
+		var rows []PromQLRow
+		for _, s := range samples {
+			val := ""
+			if len(s.Value) >= 2 {
+				val = fmt.Sprintf("%v", s.Value[1])
+			}
+			rows = append(rows, PromQLRow{
+				Value:  val,
+				Labels: formatLabels(s.Metric),
+			})
+		}
+		return &PromQLResult{
+			IsScalar:   false,
+			VectorRows: rows,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported PromQL result type: %s", promResp.Data.ResultType)
+	}
+}
+
+func formatLabels(m map[string]string) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%q", k, m[k]))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// GetFiringAlerts fetches all currently firing alerts from Grafana Unified Alerting.
+func (c *Client) GetFiringAlerts() ([]Alert, error) {
+	body, err := c.doGet("/api/prometheus/grafana/api/v1/alerts")
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			Alerts []struct {
+				Labels      map[string]string `json:"labels"`
+				Annotations map[string]string `json:"annotations"`
+				State       string            `json:"state"`
+			} `json:"alerts"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse alerts response: %w", err)
+	}
+
+	var firing []Alert
+	for _, a := range resp.Data.Alerts {
+		if strings.EqualFold(a.State, "firing") {
+			name := a.Labels["alertname"]
+			if name == "" {
+				name = "unnamed-alert"
+			}
+			summary := a.Annotations["summary"]
+			if summary == "" {
+				summary = a.Annotations["description"]
+			}
+			firing = append(firing, Alert{
+				Name:    name,
+				Summary: summary,
+				State:   a.State,
+			})
+		}
+	}
+
+	return firing, nil
+}
