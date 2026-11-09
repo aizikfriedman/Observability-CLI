@@ -142,8 +142,9 @@ type rawPanel struct {
 	} `json:"transformations"`
 	FieldConfig struct {
 		Defaults struct {
-			Unit  string `json:"unit"`
-			Color struct {
+			Unit    string `json:"unit"`
+			NoValue string `json:"noValue"`
+			Color   struct {
 				Mode       string `json:"mode"`
 				FixedColor string `json:"fixedColor"`
 			} `json:"color"`
@@ -165,9 +166,18 @@ type rawPanel struct {
 		} `json:"defaults"`
 	} `json:"fieldConfig"`
 	// Legacy singlestat / gauge fields
-	Thresholds string   `json:"thresholds"`
-	Colors     []string `json:"colors"`
+	Thresholds string     `json:"thresholds"`
+	Colors     []string   `json:"colors"`
 	Panels     []rawPanel `json:"panels"`
+}
+
+type rawTemplateVar struct {
+	Name       string `json:"name"`
+	AllValue   string `json:"allValue"`
+	IncludeAll bool   `json:"includeAll"`
+	Current    struct {
+		Value json.RawMessage `json:"value"`
+	} `json:"current"`
 }
 
 func flattenPanels(panels []rawPanel) []rawPanel {
@@ -210,27 +220,104 @@ func parseDataSourceRef(raw json.RawMessage) (uidOrName string) {
 	return ""
 }
 
-func (c *Client) fetchDashboardPanels(dashboardUID string) ([]rawPanel, error) {
+func (c *Client) fetchDashboard(dashboardUID string) ([]rawPanel, map[string]string, error) {
 	body, err := c.doGet(fmt.Sprintf("/api/dashboards/uid/%s", url.PathEscape(dashboardUID)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var result struct {
 		Dashboard struct {
-			Panels []rawPanel `json:"panels"`
+			Panels     []rawPanel `json:"panels"`
+			Templating struct {
+				List []rawTemplateVar `json:"list"`
+			} `json:"templating"`
 		} `json:"dashboard"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse dashboard JSON: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse dashboard JSON: %w", err)
 	}
 
-	return flattenPanels(result.Dashboard.Panels), nil
+	vars := buildTemplateVarsMap(result.Dashboard.Templating.List)
+	return flattenPanels(result.Dashboard.Panels), vars, nil
+}
+
+func buildTemplateVarsMap(list []rawTemplateVar) map[string]string {
+	vars := map[string]string{
+		"__rate_interval": "5m",
+		"__interval":      "1m",
+		"__interval_ms":   "60000",
+		"__range":         "1h",
+		"__range_s":       "3600",
+		"__range_ms":      "3600000",
+	}
+
+	for _, v := range list {
+		if v.Name == "" {
+			continue
+		}
+		var val string
+		if len(v.Current.Value) > 0 && string(v.Current.Value) != "null" {
+			var s string
+			if err := json.Unmarshal(v.Current.Value, &s); err == nil {
+				val = s
+			} else {
+				var arr []string
+				if err := json.Unmarshal(v.Current.Value, &arr); err == nil && len(arr) > 0 {
+					if arr[0] == "$__all" {
+						val = "$__all"
+					} else {
+						val = strings.Join(arr, "|")
+					}
+				}
+			}
+		}
+
+		if val == "" || val == "$__all" {
+			if v.AllValue != "" {
+				val = v.AllValue
+			} else if v.IncludeAll {
+				val = ".*"
+			}
+		}
+
+		if val != "" {
+			vars[v.Name] = val
+		}
+	}
+
+	return vars
+}
+
+func interpolateExpr(expr string, vars map[string]string) string {
+	if len(vars) == 0 || !strings.Contains(expr, "$") {
+		return expr
+	}
+
+	// Sort keys by length descending so longer variable names ($service_name) are replaced before shorter prefixes ($service).
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
+	out := expr
+	for _, k := range keys {
+		val := vars[k]
+		out = strings.ReplaceAll(out, "${"+k+":regex}", val)
+		out = strings.ReplaceAll(out, "${"+k+":pipe}", val)
+		out = strings.ReplaceAll(out, "${"+k+":raw}", val)
+		out = strings.ReplaceAll(out, "${"+k+"}", val)
+		out = strings.ReplaceAll(out, "$"+k, val)
+	}
+	return out
 }
 
 // ListPanels returns all panels in a dashboard for `ocli pnl ls <DASH_UID>`.
 func (c *Client) ListPanels(dashboardUID string) ([]PanelSummary, error) {
-	panels, err := c.fetchDashboardPanels(dashboardUID)
+	panels, _, err := c.fetchDashboard(dashboardUID)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +339,7 @@ func (c *Client) ListPanels(dashboardUID string) ([]PanelSummary, error) {
 
 // GetPanelInfo returns detailed panel settings for `ocli pnl info <DASH_UID> <PANEL_ID>`.
 func (c *Client) GetPanelInfo(dashboardUID string, panelID int) (*PanelInfo, error) {
-	panels, err := c.fetchDashboardPanels(dashboardUID)
+	panels, _, err := c.fetchDashboard(dashboardUID)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +412,7 @@ func (c *Client) GetPanelInfo(dashboardUID string, panelID int) (*PanelInfo, err
 
 // GetPanelValue evaluates the panel's primary query and returns a minimal status-colored value.
 func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, error) {
-	panels, err := c.fetchDashboardPanels(dashboardUID)
+	panels, vars, err := c.fetchDashboard(dashboardUID)
 	if err != nil {
 		return nil, err
 	}
@@ -358,19 +445,33 @@ func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, e
 			}, nil
 		}
 
-		res, err := c.QueryPromQL(ds, expr)
+		interpolated := interpolateExpr(expr, vars)
+		res, err := c.QueryPromQL(ds, interpolated)
 		if err != nil {
 			return nil, err
 		}
 
-		rawVal := "No data"
+		var rawVal string
+		hasData := false
 		if res.IsScalar {
 			rawVal = res.ScalarVal
+			hasData = true
 		} else if len(res.VectorRows) > 0 {
 			rawVal = res.VectorRows[0].Value
+			hasData = true
 		}
 
-		formatted := formatWithUnit(rawVal, p.FieldConfig.Defaults.Unit)
+		var formatted string
+		if hasData {
+			formatted = formatWithUnit(rawVal, p.FieldConfig.Defaults.Unit)
+		} else if p.FieldConfig.Defaults.NoValue != "" {
+			rawVal = p.FieldConfig.Defaults.NoValue
+			formatted = p.FieldConfig.Defaults.NoValue
+		} else {
+			rawVal = "No data"
+			formatted = "No data"
+		}
+
 		colorANSI := resolvePanelColorANSI(rawVal, p)
 
 		return &PanelValue{
@@ -383,6 +484,23 @@ func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, e
 	return nil, fmt.Errorf("panel %d not found in dashboard %s", panelID, dashboardUID)
 }
 
+func formatNumberSmart(num float64) string {
+	if num == 0 {
+		return "0"
+	}
+	if num == float64(int64(num)) {
+		return fmt.Sprintf("%d", int64(num))
+	}
+	abs := num
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs < 1 {
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", num), "0"), ".")
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", num), "0"), ".")
+}
+
 func formatWithUnit(rawVal, unit string) string {
 	num, err := strconv.ParseFloat(rawVal, 64)
 	if err != nil {
@@ -390,22 +508,32 @@ func formatWithUnit(rawVal, unit string) string {
 	}
 
 	switch unit {
+	case "reqps":
+		return fmt.Sprintf("%s req/s", formatNumberSmart(num))
+	case "ops":
+		return fmt.Sprintf("%s ops/s", formatNumberSmart(num))
+	case "rps":
+		return fmt.Sprintf("%s r/s", formatNumberSmart(num))
+	case "wps":
+		return fmt.Sprintf("%s W/s", formatNumberSmart(num))
+	case "iops":
+		return fmt.Sprintf("%s iops", formatNumberSmart(num))
 	case "percent", "percentunit":
 		if unit == "percentunit" {
 			num *= 100
 		}
-		return fmt.Sprintf("%.1f%%", num)
-	case "bytes", "decbytes":
-		return fmt.Sprintf("%.1f B", num)
-	case "s", "sec":
-		return fmt.Sprintf("%.2fs", num)
-	case "ms":
-		return fmt.Sprintf("%.1fms", num)
-	default:
-		if num == float64(int64(num)) {
-			return fmt.Sprintf("%d", int64(num))
+		if num == 0 {
+			return "0%"
 		}
-		return fmt.Sprintf("%.2f", num)
+		return fmt.Sprintf("%s%%", formatNumberSmart(num))
+	case "bytes", "decbytes":
+		return fmt.Sprintf("%s B", formatNumberSmart(num))
+	case "s", "sec":
+		return fmt.Sprintf("%ss", formatNumberSmart(num))
+	case "ms":
+		return fmt.Sprintf("%sms", formatNumberSmart(num))
+	default:
+		return formatNumberSmart(num)
 	}
 }
 
