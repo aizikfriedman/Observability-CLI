@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
@@ -40,6 +41,23 @@ var pnlCmd = &cobra.Command{
 	},
 }
 
+func truncateRunes(s string, maxRunes int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	runes := []rune(s)
+	return strings.TrimSpace(string(runes[:maxRunes-3])) + "..."
+}
+
+func padRightRunes(s string, width int) string {
+	n := utf8.RuneCountInString(s)
+	if n >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-n)
+}
+
 var pnlListCmd = &cobra.Command{
 	Use:     "ls <DASH_UID>",
 	Aliases: []string{"list", "l"},
@@ -64,29 +82,64 @@ var pnlListCmd = &cobra.Command{
 			return nil
 		}
 
-		idW, typeW, titleW := 3, 10, 21
+		const (
+			maxTitleRunes = 38
+			maxDescRunes  = 52
+		)
+
+		idW, typeW, titleW, descW := 2, 4, 5, 11
+		type row struct {
+			id    string
+			ptype string
+			title string
+			desc  string
+		}
+
+		rows := make([]row, 0, len(panels))
 		for _, p := range panels {
-			if l := len(strconv.Itoa(p.ID)); l > idW {
+			r := row{
+				id:    strconv.Itoa(p.ID),
+				ptype: p.Type,
+				title: truncateRunes(p.Title, maxTitleRunes),
+				desc:  truncateRunes(p.Description, maxDescRunes),
+			}
+			if l := utf8.RuneCountInString(r.id); l > idW {
 				idW = l
 			}
-			if l := len(p.Type); l > typeW {
+			if l := utf8.RuneCountInString(r.ptype); l > typeW {
 				typeW = l
 			}
-			if l := len(p.Title); l > titleW {
+			if l := utf8.RuneCountInString(r.title); l > titleW {
 				titleW = l
 			}
+			if l := utf8.RuneCountInString(r.desc); l > descW {
+				descW = l
+			}
+			rows = append(rows, r)
 		}
 
-		header := fmt.Sprintf("%-*s | %-*s | %-*s | %s", idW, "ID", typeW, "TYPE", titleW, "TITLE", "DESCRIPTION")
-		sepLen := len(header) + 12
-		if sepLen < 65 {
-			sepLen = 65
-		}
+		header := fmt.Sprintf("%s | %s | %s | %s",
+			padRightRunes("ID", idW),
+			padRightRunes("TYPE", typeW),
+			padRightRunes("TITLE", titleW),
+			"DESCRIPTION",
+		)
+		sep := fmt.Sprintf("%s-+-%s-+-%s-+-%s",
+			strings.Repeat("-", idW),
+			strings.Repeat("-", typeW),
+			strings.Repeat("-", titleW),
+			strings.Repeat("-", descW),
+		)
 
 		fmt.Println(header)
-		fmt.Println(strings.Repeat("-", sepLen))
-		for _, p := range panels {
-			fmt.Printf("%-*d | %-*s | %-*s | %s\n", idW, p.ID, typeW, p.Type, titleW, p.Title, p.Description)
+		fmt.Println(sep)
+		for _, r := range rows {
+			fmt.Printf("%s | %s | %s | %s\n",
+				padRightRunes(r.id, idW),
+				padRightRunes(r.ptype, typeW),
+				padRightRunes(r.title, titleW),
+				r.desc,
+			)
 		}
 		return nil
 	},
