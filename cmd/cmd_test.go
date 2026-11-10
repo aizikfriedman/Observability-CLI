@@ -553,3 +553,42 @@ func TestCLICommandsEndToEnd(t *testing.T) {
 		}
 	})
 }
+
+func TestInstallHelpers(t *testing.T) {
+	// Test containsPathDir & appendToPathList (case-insensitive Windows style)
+	winPath := `C:\Windows\System32;C:\Users\User\AppData\Local\ocli\`
+	if !containsPathDir(winPath, `c:\users\user\appdata\local\ocli`, true) {
+		t.Error("expected containsPathDir to match case-insensitively with trailing slash")
+	}
+	if _, updated := appendToPathList(winPath, `C:\Users\User\AppData\Local\ocli`, true); updated {
+		t.Error("expected appendToPathList not to duplicate existing directory")
+	}
+	newWinPath, updated := appendToPathList(winPath, `C:\Custom\Bin`, true)
+	if !updated || !strings.HasSuffix(newWinPath, `;C:\Custom\Bin`) {
+		t.Errorf("unexpected appended path: %q (updated=%v)", newWinPath, updated)
+	}
+
+	// Test copyExecutableFile
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "src.bin")
+	dstFile := filepath.Join(tmpDir, "nested", "dst.bin")
+	if err := os.WriteFile(srcFile, []byte("binary-payload"), 0755); err != nil {
+		t.Fatalf("failed to write src file: %v", err)
+	}
+	if err := copyExecutableFile(srcFile, dstFile); err != nil {
+		t.Fatalf("copyExecutableFile failed: %v", err)
+	}
+	gotBytes, err := os.ReadFile(dstFile)
+	if err != nil || string(gotBytes) != "binary-payload" {
+		t.Errorf("unexpected copied file content: %q (err=%v)", string(gotBytes), err)
+	}
+	// Copying file onto itself should be a no-op
+	if err := copyExecutableFile(dstFile, dstFile); err != nil {
+		t.Errorf("expected self-copy to succeed as no-op, got %v", err)
+	}
+
+	// Test maybeAutoInstallAndExit does not trigger when arguments are present
+	if maybeAutoInstallAndExit([]string{"ocli", "health"}, 0) {
+		t.Error("expected maybeAutoInstallAndExit to return false when subcommands are passed")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"ocli/internal/grafana"
 
@@ -20,6 +21,9 @@ var rootCmd = &cobra.Command{
 
 // Execute runs the root CLI command.
 func Execute() {
+	if maybeAutoInstallAndExit(os.Args, 5*time.Second) {
+		return
+	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -27,6 +31,9 @@ func Execute() {
 }
 
 func init() {
+	// Disable Cobra's default "This is a command line tool" Windows Explorer trap
+	// so clicking the executable installs ocli into PATH and shows the welcome message.
+	cobra.MousetrapHelpText = ""
 	cobra.OnInitialize(initConfig)
 }
 
