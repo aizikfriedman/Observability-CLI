@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release (Windows, Linux, macOS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests before release
+        run: go test -v -race ./...
+
+      - name: Build Linux (amd64 & arm64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+        run: |
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ocli-linux-amd64 .
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ocli-linux-arm64 .
+
+      - name: Build macOS / Darwin (amd64 & arm64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+        run: |
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ocli-darwin-amd64 .
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ocli-darwin-arm64 .
+
+      - name: Build Windows (amd64 & arm64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+        run: |
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ocli-windows-amd64.exe .
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ocli-windows-arm64.exe .
+
+      - name: Generate SHA256 Checksums
+        run: |
+          sha256sum ocli-linux-amd64 ocli-linux-arm64 ocli-darwin-amd64 ocli-darwin-arm64 ocli-windows-amd64.exe ocli-windows-arm64.exe > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ocli-linux-amd64
+            ocli-linux-arm64
+            ocli-darwin-amd64
+            ocli-darwin-arm64
+            ocli-windows-amd64.exe
+            ocli-windows-arm64.exe
+            checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

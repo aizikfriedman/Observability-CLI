@@ -1079,4 +1079,3 @@ func (c *Client) CheckDataSourcesHealth() ([]DataSourceHealth, error) {
 
 	return results, nil
 }
-
