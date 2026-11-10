@@ -131,7 +131,7 @@ func (c *Client) doGet(endpoint string) ([]byte, error) {
 	return c.doRequest(http.MethodGet, endpoint, nil)
 }
 
-// internal raw structures for decoding Grafana dashboard JSON
+// internal raw structures for decoding Grafana dashboard JSON safely (using json.RawMessage for polymorphic fields)
 type rawPanel struct {
 	ID          int             `json:"id"`
 	Title       string          `json:"title"`
@@ -145,8 +145,8 @@ type rawPanel struct {
 		DataSource json.RawMessage `json:"datasource"`
 	} `json:"targets"`
 	Transformations []struct {
-		ID      string                 `json:"id"`
-		Options map[string]interface{} `json:"options"`
+		ID      string          `json:"id"`
+		Options json.RawMessage `json:"options"`
 	} `json:"transformations"`
 	FieldConfig struct {
 		Defaults struct {
@@ -164,12 +164,8 @@ type rawPanel struct {
 				} `json:"steps"`
 			} `json:"thresholds"`
 			Mappings []struct {
-				Type    string `json:"type"`
-				Options map[string]struct {
-					Text  string `json:"text"`
-					Color string `json:"color"`
-					Index int    `json:"index"`
-				} `json:"options"`
+				Type    string          `json:"type"`
+				Options json.RawMessage `json:"options"`
 			} `json:"mappings"`
 		} `json:"defaults"`
 	} `json:"fieldConfig"`
@@ -180,11 +176,14 @@ type rawPanel struct {
 }
 
 type rawTemplateVar struct {
-	Name       string `json:"name"`
-	AllValue   string `json:"allValue"`
-	IncludeAll bool   `json:"includeAll"`
+	Name       string          `json:"name"`
+	Type       string          `json:"type"`
+	Query      json.RawMessage `json:"query"`
+	AllValue   string          `json:"allValue"`
+	IncludeAll bool            `json:"includeAll"`
 	Current    struct {
 		Value json.RawMessage `json:"value"`
+		Text  json.RawMessage `json:"text"`
 	} `json:"current"`
 }
 
@@ -217,11 +216,11 @@ func parseDataSourceRef(raw json.RawMessage) (uidOrName string) {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(raw, &obj); err == nil {
-		if obj.Name != "" {
-			return obj.Name
-		}
 		if obj.UID != "" {
 			return obj.UID
+		}
+		if obj.Name != "" {
+			return obj.Name
 		}
 		return obj.Type
 	}
@@ -281,6 +280,14 @@ func buildTemplateVarsMap(list []rawTemplateVar) map[string]string {
 			}
 		}
 
+		// Handle datasource-type template variables (e.g., DS_PROMETHEUS)
+		if v.Type == "datasource" && (val == "" || val == "$__all" || val == "default") {
+			var qStr string
+			if err := json.Unmarshal(v.Query, &qStr); err == nil && qStr != "" {
+				val = qStr
+			}
+		}
+
 		if val == "" || val == "$__all" {
 			if v.AllValue != "" {
 				val = v.AllValue
@@ -302,7 +309,6 @@ func interpolateExpr(expr string, vars map[string]string) string {
 		return expr
 	}
 
-	// Sort keys by length descending so longer variable names ($service_name) are replaced before shorter prefixes ($service).
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
 		keys = append(keys, k)
@@ -347,7 +353,7 @@ func (c *Client) ListPanels(dashboardUID string) ([]PanelSummary, error) {
 
 // GetPanelInfo returns detailed panel settings for `ocli pnl info <DASH_UID> <PANEL_ID>`.
 func (c *Client) GetPanelInfo(dashboardUID string, panelID int) (*PanelInfo, error) {
-	panels, _, err := c.fetchDashboard(dashboardUID)
+	panels, vars, err := c.fetchDashboard(dashboardUID)
 	if err != nil {
 		return nil, err
 	}
@@ -378,6 +384,7 @@ func (c *Client) GetPanelInfo(dashboardUID string, panelID int) (*PanelInfo, err
 				})
 			}
 		}
+		ds = interpolateExpr(ds, vars)
 		if ds == "" {
 			ds = "default"
 		}
@@ -385,19 +392,22 @@ func (c *Client) GetPanelInfo(dashboardUID string, panelID int) (*PanelInfo, err
 		var transforms []string
 		for _, tr := range p.Transformations {
 			desc := tr.ID
-			if tr.ID == "organize" {
-				if excludeByName, ok := tr.Options["excludeByName"].(map[string]interface{}); ok {
-					var hidden []string
-					for field, excluded := range excludeByName {
-						if b, ok := excluded.(bool); ok && b {
-							hidden = append(hidden, field)
+			if tr.ID == "organize" && len(tr.Options) > 0 {
+				var opts map[string]interface{}
+				if json.Unmarshal(tr.Options, &opts) == nil {
+					if excludeByName, ok := opts["excludeByName"].(map[string]interface{}); ok {
+						var hidden []string
+						for field, excluded := range excludeByName {
+							if b, ok := excluded.(bool); ok && b {
+								hidden = append(hidden, field)
+							}
 						}
-					}
-					sort.Strings(hidden)
-					if len(hidden) > 0 {
-						desc = fmt.Sprintf("Organize fields (Hidden: %s)", strings.Join(hidden, ", "))
-					} else {
-						desc = "Organize fields"
+						sort.Strings(hidden)
+						if len(hidden) > 0 {
+							desc = fmt.Sprintf("Organize fields (Hidden: %s)", strings.Join(hidden, ", "))
+						} else {
+							desc = "Organize fields"
+						}
 					}
 				}
 			}
@@ -453,6 +463,7 @@ func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, e
 			}, nil
 		}
 
+		ds = interpolateExpr(ds, vars)
 		interpolated := interpolateExpr(expr, vars)
 		res, err := c.QueryPromQL(ds, interpolated)
 		if err != nil {
@@ -476,8 +487,8 @@ func (c *Client) GetPanelValue(dashboardUID string, panelID int) (*PanelValue, e
 			rawVal = p.FieldConfig.Defaults.NoValue
 			formatted = p.FieldConfig.Defaults.NoValue
 		} else {
-			rawVal = "No data"
-			formatted = "No data"
+			rawVal = "0"
+			formatted = "0"
 		}
 
 		colorANSI := resolvePanelColorANSI(rawVal, p)
@@ -548,10 +559,16 @@ func formatWithUnit(rawVal, unit string) string {
 func resolvePanelColorANSI(rawVal string, p rawPanel) string {
 	// 1. Check Value Mappings first (e.g., 1 -> green, 0 -> red)
 	for _, m := range p.FieldConfig.Defaults.Mappings {
-		if m.Type == "value" {
-			if opt, ok := m.Options[rawVal]; ok && opt.Color != "" {
-				if ansi := grafanaColorToANSI(opt.Color); ansi != "" {
-					return ansi
+		if m.Type == "value" && len(m.Options) > 0 {
+			var opts map[string]struct {
+				Text  string `json:"text"`
+				Color string `json:"color"`
+			}
+			if json.Unmarshal(m.Options, &opts) == nil {
+				if opt, ok := opts[rawVal]; ok && opt.Color != "" {
+					if ansi := grafanaColorToANSI(opt.Color); ansi != "" {
+						return ansi
+					}
 				}
 			}
 		}
@@ -613,7 +630,6 @@ func grafanaColorToANSI(c string) string {
 		return ""
 	}
 
-	// Named Grafana UI palette colors -> exact Grafana RGB values
 	palette := map[string][3]int{
 		"green":              {115, 191, 105}, // #73BF69
 		"super-light-green":  {200, 242, 194},
@@ -651,7 +667,6 @@ func grafanaColorToANSI(c string) string {
 		return fmt.Sprintf("\033[38;2;%d;%d;%dm", rgb[0], rgb[1], rgb[2])
 	}
 
-	// Hex color (#RRGGBB or #RGB)
 	if strings.HasPrefix(c, "#") {
 		hex := strings.TrimPrefix(c, "#")
 		if len(hex) == 3 {
@@ -667,7 +682,6 @@ func grafanaColorToANSI(c string) string {
 		}
 	}
 
-	// rgb(r, g, b) or rgba(r, g, b, a)
 	if strings.HasPrefix(c, "rgb") {
 		open := strings.IndexByte(c, '(')
 		close := strings.LastIndexByte(c, ')')
@@ -698,8 +712,24 @@ type dsInfo struct {
 func (c *Client) resolveDataSource(identifier string) (*dsInfo, error) {
 	identifier = strings.TrimSpace(identifier)
 
+	// Normalize unresolved export/template variables such as "${DS_PROMETHEUS}" or "$datasource"
+	if strings.HasPrefix(identifier, "$") {
+		cleaned := strings.TrimPrefix(identifier, "${")
+		cleaned = strings.TrimPrefix(cleaned, "$")
+		cleaned = strings.TrimSuffix(cleaned, "}")
+		lower := strings.ToLower(cleaned)
+		switch {
+		case strings.Contains(lower, "loki"):
+			identifier = "loki"
+		case strings.Contains(lower, "prom") || lower == "datasource" || lower == "default":
+			identifier = ""
+		default:
+			identifier = cleaned
+		}
+	}
+
 	// 1. If specific name or UID is given, try by name then by UID.
-	if identifier != "" && identifier != "default" && identifier != "$datasource" {
+	if identifier != "" && identifier != "default" && identifier != "-- Grafana --" {
 		if body, err := c.doGet("/api/datasources/name/" + url.PathEscape(identifier)); err == nil {
 			var ds dsInfo
 			if json.Unmarshal(body, &ds) == nil && (ds.UID != "" || ds.ID != 0) {
@@ -712,10 +742,9 @@ func (c *Client) resolveDataSource(identifier string) (*dsInfo, error) {
 				return &ds, nil
 			}
 		}
-		return nil, fmt.Errorf("datasource %q not found in Grafana", identifier)
 	}
 
-	// 2. Otherwise fetch all datasources and pick default (or first prometheus-compatible one).
+	// 2. Fetch all datasources and match by Name, UID, Type, or Default.
 	body, err := c.doGet("/api/datasources")
 	if err != nil {
 		return nil, err
@@ -723,6 +752,18 @@ func (c *Client) resolveDataSource(identifier string) (*dsInfo, error) {
 	var list []dsInfo
 	if err := json.Unmarshal(body, &list); err != nil {
 		return nil, fmt.Errorf("failed to parse datasources list: %w", err)
+	}
+
+	if identifier != "" && identifier != "default" {
+		for _, ds := range list {
+			if strings.EqualFold(ds.Name, identifier) ||
+				strings.EqualFold(ds.UID, identifier) ||
+				strings.EqualFold(ds.Type, identifier) ||
+				strings.Contains(strings.ToLower(ds.Type), strings.ToLower(identifier)) {
+				return &ds, nil
+			}
+		}
+		return nil, fmt.Errorf("datasource %q not found in Grafana", identifier)
 	}
 
 	for _, ds := range list {
@@ -742,21 +783,33 @@ func (c *Client) resolveDataSource(identifier string) (*dsInfo, error) {
 	return nil, fmt.Errorf("no datasources configured in Grafana")
 }
 
-// QueryPromQL executes an instant PromQL query via Grafana's DataSource proxy.
+// QueryPromQL executes an instant PromQL or LogQL query via Grafana's DataSource proxy.
 func (c *Client) QueryPromQL(dsIdentifier, query string) (*PromQLResult, error) {
 	ds, err := c.resolveDataSource(dsIdentifier)
 	if err != nil {
 		return nil, err
 	}
 
-	var proxyPath string
-	if ds.UID != "" {
-		proxyPath = fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/query?query=%s", url.PathEscape(ds.UID), url.QueryEscape(query))
-	} else {
-		proxyPath = fmt.Sprintf("/api/datasources/proxy/%d/api/v1/query?query=%s", ds.ID, url.QueryEscape(query))
+	isLoki := strings.Contains(strings.ToLower(ds.Type), "loki")
+	apiPrefix := "/api/v1"
+	if isLoki {
+		apiPrefix = "/loki/api/v1"
 	}
 
+	var baseProxy string
+	if ds.UID != "" {
+		baseProxy = fmt.Sprintf("/api/datasources/proxy/uid/%s%s", url.PathEscape(ds.UID), apiPrefix)
+	} else {
+		baseProxy = fmt.Sprintf("/api/datasources/proxy/%d%s", ds.ID, apiPrefix)
+	}
+
+	proxyPath := fmt.Sprintf("%s/query?query=%s", baseProxy, url.QueryEscape(query))
 	body, err := c.doGet(proxyPath)
+	if err != nil && isLoki {
+		// Pure log-stream queries in Loki require /query_range rather than instant /query
+		rangePath := fmt.Sprintf("%s/query_range?query=%s&limit=1", baseProxy, url.QueryEscape(query))
+		body, err = c.doGet(rangePath)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -771,10 +824,10 @@ func (c *Client) QueryPromQL(dsIdentifier, query string) (*PromQLResult, error) 
 	}
 
 	if err := json.Unmarshal(body, &promResp); err != nil {
-		return nil, fmt.Errorf("failed to parse PromQL response: %w", err)
+		return nil, fmt.Errorf("failed to parse query response: %w", err)
 	}
 	if promResp.Status != "success" {
-		return nil, fmt.Errorf("promql error: %s", promResp.Error)
+		return nil, fmt.Errorf("query error: %s", promResp.Error)
 	}
 
 	switch promResp.Data.ResultType {
@@ -813,8 +866,30 @@ func (c *Client) QueryPromQL(dsIdentifier, query string) (*PromQLResult, error) 
 			VectorRows: rows,
 		}, nil
 
+	case "streams":
+		var streams []struct {
+			Stream map[string]string `json:"stream"`
+			Values [][]string        `json:"values"`
+		}
+		if err := json.Unmarshal(promResp.Data.Result, &streams); err != nil {
+			return nil, fmt.Errorf("failed to parse log streams: %w", err)
+		}
+		var rows []PromQLRow
+		for _, st := range streams {
+			if len(st.Values) > 0 && len(st.Values[0]) >= 2 {
+				rows = append(rows, PromQLRow{
+					Value:  st.Values[0][1],
+					Labels: formatLabels(st.Stream),
+				})
+			}
+		}
+		return &PromQLResult{
+			IsScalar:   false,
+			VectorRows: rows,
+		}, nil
+
 	default:
-		return nil, fmt.Errorf("unsupported PromQL result type: %s", promResp.Data.ResultType)
+		return nil, fmt.Errorf("unsupported result type: %s", promResp.Data.ResultType)
 	}
 }
 
@@ -912,4 +987,3 @@ func (c *Client) ListDashboards() ([]DashboardSummary, error) {
 
 	return out, nil
 }
-
