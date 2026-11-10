@@ -987,3 +987,96 @@ func (c *Client) ListDashboards() ([]DashboardSummary, error) {
 
 	return out, nil
 }
+
+// DataSourceHealth represents the health check result of a single Grafana DataSource.
+type DataSourceHealth struct {
+	Name    string
+	UID     string
+	Type    string
+	Status  string
+	Latency string
+	Message string
+	IsOK    bool
+}
+
+// CheckDataSourcesHealth checks connectivity and health for all configured DataSources in Grafana.
+func (c *Client) CheckDataSourcesHealth() ([]DataSourceHealth, error) {
+	body, err := c.doGet("/api/datasources")
+	if err != nil {
+		return nil, err
+	}
+
+	var list []dsInfo
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("failed to parse datasources list: %w", err)
+	}
+
+	results := make([]DataSourceHealth, 0, len(list))
+	for _, ds := range list {
+		start := time.Now()
+		var endpoint string
+		if ds.UID != "" {
+			endpoint = fmt.Sprintf("/api/datasources/uid/%s/health", url.PathEscape(ds.UID))
+		} else {
+			endpoint = fmt.Sprintf("/api/datasources/%d/health", ds.ID)
+		}
+
+		reqURL := fmt.Sprintf("%s%s", c.BaseURL, endpoint)
+		req, reqErr := http.NewRequest(http.MethodGet, reqURL, nil)
+		status := "ERROR"
+		msg := ""
+		isOK := false
+
+		if reqErr != nil {
+			msg = reqErr.Error()
+		} else {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+			req.Header.Set("Accept", "application/json")
+
+			resp, doErr := c.httpClient.Do(req)
+			if doErr != nil {
+				msg = doErr.Error()
+			} else {
+				respBody, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+
+				var hResp struct {
+					Status  string `json:"status"`
+					Message string `json:"message"`
+				}
+				if json.Unmarshal(respBody, &hResp) == nil && (hResp.Status != "" || hResp.Message != "") {
+					if hResp.Status != "" {
+						status = strings.ToUpper(hResp.Status)
+					} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						status = "OK"
+					}
+					msg = hResp.Message
+				} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					status = "OK"
+					msg = "OK"
+				} else {
+					msg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+				}
+
+				if strings.EqualFold(status, "OK") && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					isOK = true
+					status = "OK"
+				}
+			}
+		}
+
+		latency := fmt.Sprintf("%dms", time.Since(start).Milliseconds())
+		results = append(results, DataSourceHealth{
+			Name:    ds.Name,
+			UID:     ds.UID,
+			Type:    ds.Type,
+			Status:  status,
+			Latency: latency,
+			Message: strings.ReplaceAll(strings.TrimSpace(msg), "\n", " "),
+			IsOK:    isOK,
+		})
+	}
+
+	return results, nil
+}
+

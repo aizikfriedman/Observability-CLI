@@ -34,16 +34,30 @@ datasources:
 | Command | Aliases / Shortcuts | Arguments / Flags | Description |
 | :--- | :--- | :--- | :--- |
 | `ocli setup` | `ocli s` | — | Configure Grafana URL, API Token, and DataSource aliases in `~/.ocli.yaml` |
+| `ocli health` | `hc`, `status`, `ping` | — | Check connectivity and latency to all Grafana DataSources |
 | `ocli dashboard ls` | `dash ls`, `d ls`, `d` | — | List all Grafana dashboards (`UID`, `TITLE`, `FOLDER`, `TAGS`) |
-| `ocli pnl <DASH_UID> <PANEL_ID>` | `panel`, `p` | Positional: `<DASH_UID> <PANEL_ID>` | Fetch live metric value from a panel (with threshold ANSI color status) |
-| `ocli pnl ls <DASH_UID>` | `pnl list`, `pnl l` | Positional: `<DASH_UID>` | List all panels in a dashboard (`ID`, `TYPE`, `TITLE`, `DESCRIPTION`) |
-| `ocli pnl info <DASH_UID> <PANEL_ID>` | `pnl i`, `pnl inspect` | Positional: `<DASH_UID> <PANEL_ID>` | Inspect panel configuration, DataSource, PromQL queries, and transforms |
+| `ocli pnl [<DASH_UID>] <PANEL_ID>` | `panel`, `p` | Positional: `[<DASH_UID>] <PANEL_ID>` | Fetch live metric value from a panel (with threshold ANSI color status) |
+| `ocli pnl ls [<DASH_UID>]` | `pnl list`, `pnl l` | Positional: `[<DASH_UID>]` | List all panels in a dashboard (`ID`, `TYPE`, `TITLE`, `DESCRIPTION`) |
+| `ocli pnl info [<DASH_UID>] <PANEL_ID>` | `pnl i`, `pnl inspect` | Positional: `[<DASH_UID>] <PANEL_ID>` | Inspect panel configuration, DataSource, PromQL queries, and transforms |
 | `ocli pql "<QUERY>"` | `promql`, `q` | `-t` (Thanos), `-v` (VM), `-d`/`--ds <alias>` | Execute an instant PromQL query against default or selected DataSource |
 | `ocli alerts` | `ocli a` | — | List all currently `Firing` alerts in Grafana |
 
 ## Examples & Output
 
-### 1. List All Dashboards
+### 1. Check DataSources Connectivity (`health`)
+```bash
+ocli health
+# or: ocli hc
+```
+```text
+NAME       | UID        | TYPE       | STATUS | LATENCY | MESSAGE
+-----------+------------+------------+--------+---------+------------------------------------------
+Loki       | loki       | loki       | OK     | 38ms    | Data source successfully connected.
+Prometheus | prometheus | prometheus | OK     | 42ms    | Successfully queried the Prometheus API.
+Tempo      | tempo      | tempo      | OK     | 35ms    | Data source is working
+```
+
+### 2. List All Dashboards
 ```bash
 ocli dash ls
 # or: ocli d ls / ocli dashboard ls
@@ -56,7 +70,7 @@ shoham-infra  | Shoham Observability  | Infra       | [network, eBPF]
 syn-exp       | Synthetic Exporter    | Testing     | [playwright]
 ```
 
-### 2. Fetch Panel Value
+### 3. Fetch Panel Value
 ```bash
 ocli pnl 123 4
 ```
@@ -64,7 +78,7 @@ ocli pnl 123 4
 [ CPU Usage ] 42.5%
 ```
 
-### 3. List Dashboard Panels
+### 4. List Dashboard Panels
 ```bash
 ocli pnl ls 123
 ```
@@ -76,7 +90,7 @@ ID  | TYPE       | TITLE                 | DESCRIPTION
 12  | log        | Error Logs            | Filtered by level=error
 ```
 
-### 4. Inspect Panel Configuration
+### 5. Inspect Panel Configuration
 ```bash
 ocli pnl info 123 4
 ```
@@ -89,7 +103,7 @@ Query A:    sum(rate(http_requests_total{status="200"}[5m]))
 Transform:  Organize fields (Hidden: Time)
 ```
 
-### 5. Execute PromQL Queries (Prometheus / Thanos / VictoriaMetrics)
+### 6. Execute PromQL Queries (Prometheus / Thanos / VictoriaMetrics)
 ```bash
 # Default Prometheus DataSource
 ocli pql "sum(servers) - 4"
@@ -109,7 +123,7 @@ VALUE      | LABELS
 12         | {}
 ```
 
-### 6. Firing Alerts
+### 7. Firing Alerts
 ```bash
 ocli a
 ```
@@ -125,6 +139,7 @@ ocli a
 ├── cmd/
 │   ├── root.go      # Root command & Viper config loader (~/.ocli.yaml / ENV)
 │   ├── setup.go     # Interactive/ENV setup command
+│   ├── health.go    # DataSources connectivity & health check command
 │   ├── dashboard.go # Dashboard commands: dashboard ls, dash ls, d ls
 │   ├── panel.go     # Panel commands: pnl, pnl ls, pnl info
 │   ├── pql.go       # PromQL execution & DataSource alias routing (-t, -v, -d)
