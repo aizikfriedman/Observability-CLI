@@ -27,6 +27,14 @@ type Alert struct {
 	State   string
 }
 
+// DashboardSummary represents a single row in `ocli dashboard ls`.
+type DashboardSummary struct {
+	UID    string
+	Title  string
+	Folder string
+	Tags   []string
+}
+
 // PanelSummary represents a single row in `ocli pnl ls <DASH_UID>`.
 type PanelSummary struct {
 	ID          int
@@ -869,3 +877,39 @@ func (c *Client) GetFiringAlerts() ([]Alert, error) {
 
 	return firing, nil
 }
+
+// ListDashboards fetches all dashboards via `/api/search?type=dash-db`.
+func (c *Client) ListDashboards() ([]DashboardSummary, error) {
+	body, err := c.doGet("/api/search?type=dash-db")
+	if err != nil {
+		return nil, err
+	}
+
+	var items []struct {
+		UID         string   `json:"uid"`
+		Title       string   `json:"title"`
+		FolderTitle string   `json:"folderTitle"`
+		Tags        []string `json:"tags"`
+	}
+
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, fmt.Errorf("failed to parse dashboards list: %w", err)
+	}
+
+	var out []DashboardSummary
+	for _, item := range items {
+		folder := strings.TrimSpace(item.FolderTitle)
+		if folder == "" {
+			folder = "General"
+		}
+		out = append(out, DashboardSummary{
+			UID:    item.UID,
+			Title:  item.Title,
+			Folder: folder,
+			Tags:   item.Tags,
+		})
+	}
+
+	return out, nil
+}
+
