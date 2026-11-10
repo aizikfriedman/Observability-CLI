@@ -65,15 +65,17 @@ jobs:
 
       - name: Run tests with race detector & coverage (Unix)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
-          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
-          go tool cover -func=coverage.out
+          go test -v -race "-coverprofile=coverage.out" "-covermode=atomic" ./...
+          go tool cover "-func=coverage.out"
 
       - name: Run tests with coverage (Windows)
         if: runner.os == 'Windows'
+        shell: bash
         run: |
-          go test -v -coverprofile=coverage.out -covermode=atomic ./...
-          go tool cover -func=coverage.out
+          go test -v "-coverprofile=coverage.out" "-covermode=atomic" ./...
+          go tool cover "-func=coverage.out"
 
       - name: Build binary
         run: go build -v ./...
