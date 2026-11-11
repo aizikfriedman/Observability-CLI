@@ -3,9 +3,10 @@
 package cmd
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -25,33 +26,13 @@ func windowsInstallDir() (string, error) {
 	return filepath.Join(localAppData, "ocli"), nil
 }
 
-func isAlreadyInstalledBinary(exePath string) bool {
-	installDir, err := windowsInstallDir()
-	if err != nil {
-		return false
-	}
-	installedExe := filepath.Join(installDir, "ocli.exe")
-	if _, err := os.Stat(installedExe); err != nil {
-		return false
-	}
-	return strings.EqualFold(filepath.Base(exePath), "ocli.exe")
+// isWindowsDoubleClick returns true ONLY when the binary was started by double-clicking
+// in Windows Explorer (mousetrap.StartedByExplorer).
+func isWindowsDoubleClick() bool {
+	return mousetrap.StartedByExplorer()
 }
 
-// isStandaloneLaunch returns true when the binary was started by double-clicking in
-// Windows Explorer or opened directly from a browser/GUI download bar (creating a
-// standalone console window with only 1 attached process).
-func isStandaloneLaunch() bool {
-	if mousetrap.StartedByExplorer() {
-		return true
-	}
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	proc := kernel32.NewProc("GetConsoleProcessList")
-	var pids [2]uint32
-	count, _, _ := proc.Call(uintptr(unsafe.Pointer(&pids[0])), 2)
-	return count == 1
-}
-
-func installSelfToOS() (string, error) {
+func installSelfToOS(in io.Reader, out io.Writer) (string, error) {
 	srcExe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -86,6 +67,28 @@ func installSelfToOS() (string, error) {
 	return dstExe, nil
 }
 
+func uninstallSelfFromOS(out io.Writer) error {
+	installDir, err := windowsInstallDir()
+	if err != nil {
+		return err
+	}
+
+	dstExe := filepath.Join(installDir, "ocli.exe")
+	if err := os.Remove(dstExe); err == nil {
+		fmt.Fprintf(out, "Removed %s\n", dstExe)
+	}
+	_ = os.Remove(installDir)
+
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		winAppsExe := filepath.Join(localAppData, "Microsoft", "WindowsApps", "ocli.exe")
+		if err := os.Remove(winAppsExe); err == nil {
+			fmt.Fprintf(out, "Removed %s\n", winAppsExe)
+		}
+	}
+
+	return removeDirFromWindowsUserPath(installDir)
+}
+
 func addDirToWindowsUserPath(dir string) error {
 	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
@@ -100,6 +103,39 @@ func addDirToWindowsUserPath(dir string) error {
 
 	newPath, updated := appendToPathList(currentPath, dir, true)
 	if !updated {
+		return nil
+	}
+
+	if valType == registry.SZ {
+		err = k.SetStringValue("Path", newPath)
+	} else {
+		err = k.SetExpandStringValue("Path", newPath)
+	}
+	if err != nil {
+		return err
+	}
+
+	broadcastEnvironmentChange()
+	return nil
+}
+
+func removeDirFromWindowsUserPath(dir string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	currentPath, valType, err := k.GetStringValue("Path")
+	if err != nil {
+		if err == registry.ErrNotExist {
+			return nil
+		}
+		return err
+	}
+
+	newPath, removed := removeFromPathList(currentPath, dir, true)
+	if !removed {
 		return nil
 	}
 

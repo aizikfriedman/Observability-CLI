@@ -9,7 +9,7 @@ import (
 var alertsCmd = &cobra.Command{
 	Use:     "alerts",
 	Aliases: []string{"a"},
-	Short:   "List all currently firing alerts",
+	Short:   "List all currently firing alerts (exits with code 1 if any are firing)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := getClient()
 		if err != nil {
@@ -33,7 +33,7 @@ var alertsCmd = &cobra.Command{
 				fmt.Printf("[FIRING] %s\n", a.Name)
 			}
 		}
-		return nil
+		return ErrSilentExit1
 	},
 }
 

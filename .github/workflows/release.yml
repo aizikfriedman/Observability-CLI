@@ -36,16 +36,18 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
         run: |
-          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ocli-linux-amd64 .
-          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ocli-linux-arm64 .
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w -X ocli/cmd.Version=${VERSION}" -o ocli-linux-amd64 .
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w -X ocli/cmd.Version=${VERSION}" -o ocli-linux-arm64 .
 
       - name: Build macOS / Darwin (amd64 & arm64)
         env:
           CGO_ENABLED: "0"
           GOOS: darwin
         run: |
-          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ocli-darwin-amd64 .
-          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ocli-darwin-arm64 .
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w -X ocli/cmd.Version=${VERSION}" -o ocli-darwin-amd64 .
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w -X ocli/cmd.Version=${VERSION}" -o ocli-darwin-arm64 .
 
       - name: Generate Windows icon resource (.syso)
         run: go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico assets/ocli-icon.ico -o rsrc_windows_amd64.syso
@@ -55,8 +57,9 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: windows
         run: |
-          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ocli-windows-amd64.exe .
-          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ocli-windows-arm64.exe .
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w -X ocli/cmd.Version=${VERSION}" -o ocli-windows-amd64.exe .
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w -X ocli/cmd.Version=${VERSION}" -o ocli-windows-arm64.exe .
 
       - name: Generate SHA256 Checksums
         run: |

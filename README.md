@@ -26,8 +26,8 @@ Download the pre-compiled binary for your operating system and architecture from
 
 #### Windows — One-Click Setup
 1. Download `ocli-windows-amd64.exe` from the latest release.
-2. **Double-click** the downloaded `.exe` file (or run it without arguments).
-3. `ocli` automatically installs itself into your user `PATH` (`%LOCALAPPDATA%\ocli\ocli.exe`), displays a confirmation message for 5 seconds, and closes:
+2. **Double-click** the downloaded `.exe` file in Windows Explorer (or run `.\ocli-windows-amd64.exe install` in a terminal).
+3. `ocli` installs itself into your user `PATH` (`%LOCALAPPDATA%\ocli\ocli.exe`), displays a confirmation message for 5 seconds, and closes:
    ```text
    Thank you for using OCLI!
    OCLI is now configured to run from anywhere.
@@ -38,7 +38,7 @@ Download the pre-compiled binary for your operating system and architecture from
 4. Open any terminal (`PowerShell`, `CMD`, Windows Terminal) from anywhere and run `ocli setup`.
 
 #### Linux & macOS
-Make the downloaded binary executable and run `install` (or run the binary with no arguments) to install `ocli` into your `PATH` (`/usr/local/bin/ocli` or `~/.local/bin/ocli`):
+Make the downloaded binary executable and run `install` to copy `ocli` into `~/.local/bin/ocli` (if `~/.local/bin` is not in your `PATH`, `ocli` will ask `[Y/n]` before adding it to your shell profile):
 
 ```bash
 # Linux (x86_64)
@@ -89,13 +89,15 @@ datasources:
 
 Every command provides a clear, readable primary name alongside ultra-short aliases for fast terminal workflows.
 
-### 1. Setup, Installation & Health
+### 1. Setup, Installation, Version & Health
 
-| Command | Aliases | Arguments / Env | Description |
+| Command | Aliases | Arguments / Flags | Description |
 | :--- | :--- | :--- | :--- |
-| `ocli install` | — | — | Install `ocli` into your system `PATH` so it can be run from anywhere |
+| `ocli install` | — | — | Install `ocli` into your user `PATH` (`~/.local/bin` on Unix with `[Y/n]` prompt, `%LOCALAPPDATA%\ocli` on Windows) |
+| `ocli uninstall` | — | — | Remove `ocli` binary from your system `PATH` and clean up `PATH` configuration |
 | `ocli setup` | `s` | Env: `OCLI_URL`, `OCLI_TOKEN` | Configure Grafana URL, API Token, and DataSource aliases in `~/.ocli.yaml` |
-| `ocli health` | `hc` | — | Check connectivity, status (`OK`/`ERROR`), and latency to all Grafana DataSources |
+| `ocli health` | `hc` | — | Check connectivity, status (`OK`/`ERROR`), and latency to all Grafana DataSources *(exits `1` if any DataSource is in `ERROR`)* |
+| `ocli version` | `ver`, `ocli --version` | `--version`, `-v` | Print the installed version of `ocli` |
 
 ### 2. Dashboards
 
@@ -126,7 +128,7 @@ Every command provides a clear, readable primary name alongside ultra-short alia
 
 | Command | Aliases | Arguments | Description |
 | :--- | :--- | :--- | :--- |
-| `ocli alerts` | `a` | — | List all currently `Firing` alerts from Grafana Unified Alerting |
+| `ocli alerts` | `a` | — | List all currently `Firing` alerts from Grafana Unified Alerting *(exits `1` if any alerts are firing, `0` if none)* |
 
 ---
 

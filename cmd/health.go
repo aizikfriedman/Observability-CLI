@@ -11,7 +11,7 @@ import (
 var healthCmd = &cobra.Command{
 	Use:     "health",
 	Aliases: []string{"hc", "status", "ping"},
-	Short:   "Check connectivity and health of all Grafana DataSources",
+	Short:   "Check connectivity and health of all Grafana DataSources (exits with code 1 on error)",
 	Example: "  ocli health\n  ocli hc",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -46,8 +46,12 @@ var healthCmd = &cobra.Command{
 			isOK    bool
 		}
 
+		hasError := false
 		rows := make([]row, 0, len(results))
 		for _, h := range results {
+			if !h.IsOK {
+				hasError = true
+			}
 			r := row{
 				name:    truncateRunes(h.Name, maxNameRunes),
 				uid:     h.UID,
@@ -115,6 +119,10 @@ var healthCmd = &cobra.Command{
 				padRightRunes(r.latency, latW),
 				r.message,
 			)
+		}
+
+		if hasError {
+			return ErrSilentExit1
 		}
 		return nil
 	},

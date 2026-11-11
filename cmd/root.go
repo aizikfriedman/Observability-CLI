@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,10 @@ import (
 	"github.com/spf13/viper"
 )
 
+// ErrSilentExit1 indicates that the command has already printed its output
+// (such as firing alerts or unhealthy datasources) and the CLI should exit with code 1.
+var ErrSilentExit1 = errors.New("exit status 1")
+
 var rootCmd = &cobra.Command{
 	Use:           "ocli",
 	Short:         "Minimalist Grafana Observability CLI",
@@ -21,18 +26,21 @@ var rootCmd = &cobra.Command{
 
 // Execute runs the root CLI command.
 func Execute() {
-	if maybeAutoInstallAndExit(os.Args, 5*time.Second) {
+	if maybeWindowsDoubleClickInstall(os.Args, 5*time.Second) {
 		return
 	}
+	rootCmd.Version = Version
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		if !errors.Is(err, ErrSilentExit1) {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+		}
 		os.Exit(1)
 	}
 }
 
 func init() {
 	// Disable Cobra's default "This is a command line tool" Windows Explorer trap
-	// so clicking the executable installs ocli into PATH and shows the welcome message.
+	// so double-clicking the executable on Windows installs ocli into PATH and shows the welcome message.
 	cobra.MousetrapHelpText = ""
 	cobra.OnInitialize(initConfig)
 }

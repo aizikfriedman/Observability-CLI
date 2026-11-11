@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -343,19 +344,43 @@ func TestCLICommandsEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("HealthCommand", func(t *testing.T) {
+	t.Run("HealthCommand_Exits1OnError", func(t *testing.T) {
 		setupTestEnv(t, srv.URL)
 		out, err := captureStdout(t, func() error {
 			rootCmd.SetArgs([]string{"health"})
 			return rootCmd.Execute()
 		})
-		if err != nil {
-			t.Fatalf("health command failed: %v", err)
+		if !errors.Is(err, ErrSilentExit1) {
+			t.Fatalf("expected ErrSilentExit1 when a datasource is in ERROR state, got: %v", err)
 		}
 		for _, want := range []string{"NAME", "UID", "STATUS", "Thanos", "VictoriaMetrics", "Connection refused"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("health output missing %q:\n%s", want, out)
 			}
+		}
+	})
+
+	t.Run("HealthCommand_Exits0WhenAllHealthy", func(t *testing.T) {
+		healthySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/datasources":
+				_, _ = w.Write([]byte(`[{"id":1,"uid":"prom-uid","name":"Prometheus","type":"prometheus","isDefault":true}]`))
+			case "/api/datasources/uid/prom-uid/health":
+				_, _ = w.Write([]byte(`{"status":"OK","message":"Data source is working"}`))
+			}
+		}))
+		defer healthySrv.Close()
+
+		setupTestEnv(t, healthySrv.URL)
+		out, err := captureStdout(t, func() error {
+			rootCmd.SetArgs([]string{"health"})
+			return rootCmd.Execute()
+		})
+		if err != nil {
+			t.Fatalf("expected nil error when all datasources are healthy, got: %v", err)
+		}
+		if !strings.Contains(out, "Prometheus") || !strings.Contains(out, "OK") {
+			t.Errorf("unexpected healthy output:\n%s", out)
 		}
 	})
 
@@ -501,17 +526,58 @@ func TestCLICommandsEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("AlertsCommand", func(t *testing.T) {
+	t.Run("AlertsCommand_Exits1WhenFiring", func(t *testing.T) {
 		setupTestEnv(t, srv.URL)
 		out, err := captureStdout(t, func() error {
 			rootCmd.SetArgs([]string{"alerts"})
 			return rootCmd.Execute()
 		})
-		if err != nil {
-			t.Fatalf("alerts failed: %v", err)
+		if !errors.Is(err, ErrSilentExit1) {
+			t.Fatalf("expected ErrSilentExit1 when alerts are firing, got: %v", err)
 		}
 		if !strings.Contains(out, "[FIRING] HighCPU - CPU > 90%") || !strings.Contains(out, "[FIRING] NoSummaryAlert") {
 			t.Errorf("unexpected alerts output:\n%s", out)
+		}
+	})
+
+	t.Run("VersionAndNoArgsHelp", func(t *testing.T) {
+		setupTestEnv(t, srv.URL)
+		Version = "v1.2.3"
+		rootCmd.Version = Version
+
+		outVerCmd, err := captureStdout(t, func() error {
+			rootCmd.SetArgs([]string{"version"})
+			return rootCmd.Execute()
+		})
+		if err != nil || strings.TrimSpace(outVerCmd) != "ocli version v1.2.3" {
+			t.Errorf("unexpected version command output: %q (err=%v)", outVerCmd, err)
+		}
+
+		var flagBuf bytes.Buffer
+		rootCmd.SetOut(&flagBuf)
+		rootCmd.SetArgs([]string{"--version"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("--version flag failed: %v", err)
+		}
+		if vf := rootCmd.Flags().Lookup("version"); vf != nil {
+			_ = vf.Value.Set("false")
+			vf.Changed = false
+		}
+		rootCmd.SetOut(nil)
+		if strings.TrimSpace(flagBuf.String()) != "ocli version v1.2.3" {
+			t.Errorf("unexpected --version output: %q", flagBuf.String())
+		}
+
+		// Running ocli with no arguments prints help and exits 0 (no auto-install)
+		var helpBuf bytes.Buffer
+		rootCmd.SetOut(&helpBuf)
+		rootCmd.SetArgs([]string{})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("no-args execution failed: %v", err)
+		}
+		rootCmd.SetOut(nil)
+		if !strings.Contains(helpBuf.String(), "Available Commands:") {
+			t.Errorf("expected Help output on no-args run, got:\n%s", helpBuf.String())
 		}
 	})
 
@@ -555,7 +621,7 @@ func TestCLICommandsEndToEnd(t *testing.T) {
 }
 
 func TestInstallHelpers(t *testing.T) {
-	// Test containsPathDir & appendToPathList (case-insensitive Windows style)
+	// Test containsPathDir, appendToPathList & removeFromPathList (case-insensitive Windows style)
 	winPath := `C:\Windows\System32;C:\Users\User\AppData\Local\ocli\`
 	if !containsPathDir(winPath, `c:\users\user\appdata\local\ocli`, true) {
 		t.Error("expected containsPathDir to match case-insensitively with trailing slash")
@@ -566,6 +632,10 @@ func TestInstallHelpers(t *testing.T) {
 	newWinPath, updated := appendToPathList(winPath, `C:\Custom\Bin`, true)
 	if !updated || !strings.HasSuffix(newWinPath, `;C:\Custom\Bin`) {
 		t.Errorf("unexpected appended path: %q (updated=%v)", newWinPath, updated)
+	}
+	cleanedPath, removed := removeFromPathList(newWinPath, `c:\custom\bin\`, true)
+	if !removed || containsPathDir(cleanedPath, `C:\Custom\Bin`, true) {
+		t.Errorf("expected removeFromPathList to remove C:\\Custom\\Bin, got %q (removed=%v)", cleanedPath, removed)
 	}
 
 	// Test copyExecutableFile
@@ -582,13 +652,47 @@ func TestInstallHelpers(t *testing.T) {
 	if err != nil || string(gotBytes) != "binary-payload" {
 		t.Errorf("unexpected copied file content: %q (err=%v)", string(gotBytes), err)
 	}
-	// Copying file onto itself should be a no-op
 	if err := copyExecutableFile(dstFile, dstFile); err != nil {
 		t.Errorf("expected self-copy to succeed as no-op, got %v", err)
 	}
 
-	// Test maybeAutoInstallAndExit does not trigger when arguments are present
-	if maybeAutoInstallAndExit([]string{"ocli", "health"}, 0) {
-		t.Error("expected maybeAutoInstallAndExit to return false when subcommands are passed")
+	// Test Unix interactive [Y/n] prompt: declining ('n') must NOT touch .zshrc
+	homeDir := t.TempDir()
+	zshrc := filepath.Join(homeDir, ".zshrc")
+	if err := os.WriteFile(zshrc, []byte("# existing zshrc\n"), 0644); err != nil {
+		t.Fatalf("failed to create .zshrc: %v", err)
+	}
+	installDir := filepath.Join(homeDir, ".local", "bin")
+	var promptOut bytes.Buffer
+	if err := promptAndConfigureUnixPath(homeDir, installDir, "/usr/bin:/bin", strings.NewReader("n\n"), &promptOut); err != nil {
+		t.Fatalf("promptAndConfigureUnixPath (n) failed: %v", err)
+	}
+	afterDecline, _ := os.ReadFile(zshrc)
+	if strings.Contains(string(afterDecline), ".local/bin") {
+		t.Error("expected .zshrc NOT to be modified when user answers 'n'")
+	}
+	if !strings.Contains(promptOut.String(), "Skipped modifying shell profile") {
+		t.Errorf("expected skip message in output, got: %s", promptOut.String())
+	}
+
+	// Test Unix interactive [Y/n] prompt: accepting ('y') appends export line, and cleanUnixShellProfiles removes it
+	promptOut.Reset()
+	if err := promptAndConfigureUnixPath(homeDir, installDir, "/usr/bin:/bin", strings.NewReader("y\n"), &promptOut); err != nil {
+		t.Fatalf("promptAndConfigureUnixPath (y) failed: %v", err)
+	}
+	afterAccept, _ := os.ReadFile(zshrc)
+	if !strings.Contains(string(afterAccept), unixPathExportLine) {
+		t.Errorf("expected .zshrc to contain %q after accepting, got: %s", unixPathExportLine, string(afterAccept))
+	}
+
+	cleanUnixShellProfiles(homeDir)
+	afterClean, _ := os.ReadFile(zshrc)
+	if strings.Contains(string(afterClean), unixPathExportLine) {
+		t.Errorf("expected cleanUnixShellProfiles to remove export line, got: %s", string(afterClean))
+	}
+
+	// Test maybeWindowsDoubleClickInstall does not trigger when arguments are present
+	if maybeWindowsDoubleClickInstall([]string{"ocli", "health"}, 0) {
+		t.Error("expected maybeWindowsDoubleClickInstall to return false when subcommands are passed")
 	}
 }
