@@ -5,7 +5,7 @@
 
 Minimalist, terminal-first CLI in Go for querying Grafana dashboards, panels, alerts, DataSource health, and PromQL/LogQL engines (Prometheus, Thanos, VictoriaMetrics, Loki) with zero bloat and muscle-memory ergonomics.
 
-![OCLI Terminal Preview](assets/ocli-terminal.png)
+<img src="assets/ocli-terminal.png" alt="OCLI Terminal Preview" width="700" />
 
 ---
 
