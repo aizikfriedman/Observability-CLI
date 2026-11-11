@@ -1,4 +1,4 @@
-# ocli — Observability CLI
+# OCLI: Observability command line interface
 
 [![CI](https://github.com/aizikfriedman/Observability-CLI/actions/workflows/ci.yml/badge.svg)](https://github.com/aizikfriedman/Observability-CLI/actions/workflows/ci.yml)
 [![Release](https://github.com/aizikfriedman/Observability-CLI/actions/workflows/release.yml/badge.svg)](https://github.com/aizikfriedman/Observability-CLI/releases/latest)
@@ -149,11 +149,13 @@ ocli dashboard list
 # or: ocli dash ls / ocli d
 ```
 ```text
-UID           | TITLE                 | FOLDER      | TAGS
---------------+-----------------------+-------------+-------------------
-app-deep-dive | App Deep Dive         | Production  | [otel, tracing]
-shoham-infra  | Shoham Observability  | Infra       | [network, eBPF]
-syn-exp       | Synthetic Exporter    | Testing     | [playwright]
+UID                 | TITLE                       | FOLDER         | TAGS
+--------------------+-----------------------------+----------------+--------------------------------
+payments-prod       | Payment Processing          | Business       | [transactions, revenue, api]
+k8s-cluster-east    | Kubernetes Cluster Health   | Infrastructure | [kubernetes, pods, nodes]
+edge-gateway        | Edge Traffic Analytics      | Networking     | [nginx, ingress, traffic]
+data-pipeline       | Data Pipeline Performance   | Data           | [kafka, processing, throughput]
+identity-services   | Identity & Access Monitor   | Security       | [oauth, authentication, tokens]
 ```
 
 ### 3. List Dashboard Panels (`panel list`)
