@@ -3,7 +3,9 @@
 [![CI](https://github.com/aizikfriedman/Observability-CLI/actions/workflows/ci.yml/badge.svg)](https://github.com/aizikfriedman/Observability-CLI/actions/workflows/ci.yml)
 [![Release](https://github.com/aizikfriedman/Observability-CLI/actions/workflows/release.yml/badge.svg)](https://github.com/aizikfriedman/Observability-CLI/releases/latest)
 
-Minimalist, terminal-first CLI in Go for querying Grafana dashboards, panels, alerts,DataSource health, and PromQL/LogQL engines (Prometheus, Thanos, VictoriaMetrics, Loki) with zero bloat and muscle-memory ergonomics.
+Minimalist, terminal-first CLI in Go for querying Grafana dashboards, panels, alerts, DataSource health, and PromQL/LogQL engines (Prometheus, Thanos, VictoriaMetrics, Loki) with zero bloat and muscle-memory ergonomics.
+
+![OCLI Terminal Preview](assets/ocli-terminal.png)
 
 ---
 
@@ -232,7 +234,8 @@ ocli alerts
 .
 ├── main.go
 ├── assets/
-│   └── ocli-icon.ico            # Application icon embedded during Windows release builds
+│   ├── ocli-icon.ico            # Application icon embedded during Windows release builds
+│   └── ocli-terminal.png        # Terminal preview screenshot
 ├── cmd/
 │   ├── root.go                  # Root command, Viper config loader & click-to-install hook
 │   ├── install.go               # Self-installer command & PATH helper utilities

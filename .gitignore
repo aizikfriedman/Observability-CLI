@@ -5,8 +5,8 @@
 *.so
 *.dylib
 *.syso
-ocli
-ocli-*
+/ocli
+/ocli-*
 checksums.txt
 
 # Test binary, built with `go test -c`
