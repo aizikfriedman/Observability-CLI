@@ -35,10 +35,10 @@ func saveLastDashboard(uid string) {
 }
 
 var pnlCmd = &cobra.Command{
-	Use:     "pnl [<DASH_UID>] <PANEL_ID>",
-	Aliases: []string{"panel", "p"},
+	Use:     "panel [<DASH_UID>] <PANEL_ID>",
+	Aliases: []string{"pnl", "p"},
 	Short:   "Fetch panel value, list dashboard panels, or inspect panel config",
-	Example: "  ocli pnl app-deep-dive 2\n  ocli pnl 2                  (uses last/default dashboard)\n  ocli pnl ls app-deep-dive\n  ocli pnl info app-deep-dive 2",
+	Example: "  ocli panel app-deep-dive 2\n  ocli pnl 2                  (uses last/default dashboard)\n  ocli panel list app-deep-dive\n  ocli panel info app-deep-dive 2",
 	Args:    cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
@@ -107,10 +107,10 @@ func padRightRunes(s string, width int) string {
 }
 
 var pnlListCmd = &cobra.Command{
-	Use:     "ls [<DASH_UID>]",
-	Aliases: []string{"list", "l"},
+	Use:     "list [<DASH_UID>]",
+	Aliases: []string{"ls", "l"},
 	Short:   "List all panels in a dashboard",
-	Example: "  ocli pnl ls app-deep-dive\n  ocli pnl ls",
+	Example: "  ocli panel list app-deep-dive\n  ocli pnl ls",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var explicit string

@@ -15,10 +15,10 @@ var (
 )
 
 var pqlCmd = &cobra.Command{
-	Use:     "pql <QUERY>",
-	Aliases: []string{"promql", "q"},
-	Short:   "Execute an instant PromQL query via Grafana DataSource proxy",
-	Example: "  ocli pql \"sum(servers) - 4\"\n  ocli pql -t \"up == 0\"\n  ocli pql -v \"rate(http_requests_total[5m])\"\n  ocli pql --ds dev \"node_load1\"",
+	Use:     "promql <QUERY>",
+	Aliases: []string{"pql", "q", "query"},
+	Short:   "Execute an instant PromQL or LogQL query via Grafana DataSource proxy",
+	Example: "  ocli promql \"sum(servers) - 4\"\n  ocli pql -t \"up == 0\"\n  ocli pql -v \"rate(http_requests_total[5m])\"\n  ocli promql --ds dev \"node_load1\"",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]

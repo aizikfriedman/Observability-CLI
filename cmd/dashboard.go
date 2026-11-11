@@ -12,15 +12,15 @@ var dashboardCmd = &cobra.Command{
 	Use:     "dashboard",
 	Aliases: []string{"dash", "d"},
 	Short:   "Manage and list Grafana dashboards",
-	Example: "  ocli dashboard ls\n  ocli dash ls\n  ocli d ls",
+	Example: "  ocli dashboard list\n  ocli dash ls\n  ocli d",
 	RunE:    runDashboardList,
 }
 
 var dashboardListCmd = &cobra.Command{
-	Use:     "ls",
-	Aliases: []string{"list", "l"},
+	Use:     "list",
+	Aliases: []string{"ls", "l"},
 	Short:   "List all Grafana dashboards",
-	Example: "  ocli dashboard ls\n  ocli dash ls\n  ocli d ls",
+	Example: "  ocli dashboard list\n  ocli dash ls\n  ocli d ls",
 	Args:    cobra.NoArgs,
 	RunE:    runDashboardList,
 }
