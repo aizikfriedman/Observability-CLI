@@ -95,13 +95,13 @@ Every command provides a clear, readable primary name alongside ultra-short alia
 | :--- | :--- | :--- | :--- |
 | `ocli install` | — | — | Install `ocli` into your system `PATH` so it can be run from anywhere |
 | `ocli setup` | `s` | Env: `OCLI_URL`, `OCLI_TOKEN` | Configure Grafana URL, API Token, and DataSource aliases in `~/.ocli.yaml` |
-| `ocli health` | `hc`, `status`, `ping` | — | Check connectivity, status (`OK`/`ERROR`), and latency to all Grafana DataSources |
+| `ocli health` | `hc` | — | Check connectivity, status (`OK`/`ERROR`), and latency to all Grafana DataSources |
 
 ### 2. Dashboards
 
 | Command | Aliases | Arguments | Description |
 | :--- | :--- | :--- | :--- |
-| `ocli dashboard list` | `dashboard ls`, `dashboard l`, `dash list`, `dash ls`, `d list`, `d ls`, `dashboard`, `dash`, `d` | — | List all Grafana dashboards (`UID`, `TITLE`, `FOLDER`, `TAGS`) |
+| `ocli dashboard list` | `d` | — | List all Grafana dashboards (`UID`, `TITLE`, `FOLDER`, `TAGS`) |
 
 ### 3. Panels
 
@@ -109,7 +109,7 @@ Every command provides a clear, readable primary name alongside ultra-short alia
 
 | Command | Aliases | Arguments | Description |
 | :--- | :--- | :--- | :--- |
-| `ocli panel list [<DASH_UID>]` | `panel ls`, `panel l`, `pnl list`, `pnl ls`, `pnl l`, `p list`, `p ls`, `p l`, `panel <DASH_UID>`, `pnl <DASH_UID>`, `p <DASH_UID>` | `[<DASH_UID>]` | List all panels in a dashboard (`ID`, `TYPE`, `TITLE`, `DESCRIPTION`) |
+| `ocli panel list [<DASH_UID>]` | `pnl ls` | `[<DASH_UID>]` | List all panels in a dashboard (`ID`, `TYPE`, `TITLE`, `DESCRIPTION`) |
 | `ocli panel [<DASH_UID>] <PANEL_ID>` | `pnl`, `p` | `[<DASH_UID>] <PANEL_ID>` | Fetch live metric value from a panel (formatted with units & Grafana TrueColor ANSI thresholds) |
 | `ocli panel info [<DASH_UID>] <PANEL_ID>` | `panel inspect`, `panel i`, `pnl info`, `pnl inspect`, `pnl i`, `p info`, `p inspect`, `p i` | `[<DASH_UID>] <PANEL_ID>` | Inspect panel configuration, resolved DataSource, PromQL/LogQL queries, and transformations |
 
